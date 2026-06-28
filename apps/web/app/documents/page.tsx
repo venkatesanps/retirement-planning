@@ -409,7 +409,24 @@ function DocumentCard({
           </Button>
         </div>
       ) : null}
+
+      {doc.debugText ? <DebugSnippet text={doc.debugText} /> : null}
     </div>
+  );
+}
+
+function DebugSnippet({ text }: { text: string }) {
+  return (
+    <details className="border-t border-border/60 group">
+      <summary className="cursor-pointer list-none px-5 py-3 text-xs text-muted-foreground hover:text-foreground select-none flex items-center justify-between">
+        <span>Show extracted text (for debugging / manual lookup)</span>
+        <span className="text-[10px] uppercase tracking-wider group-open:hidden">show</span>
+        <span className="text-[10px] uppercase tracking-wider hidden group-open:inline">hide</span>
+      </summary>
+      <pre className="px-5 pb-4 text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap max-h-72 overflow-y-auto font-mono">
+        {text}
+      </pre>
+    </details>
   );
 }
 

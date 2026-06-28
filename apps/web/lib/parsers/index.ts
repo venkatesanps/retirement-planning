@@ -92,5 +92,29 @@ export async function parseDocument(
     doc.errors = [...(doc.errors ?? []), `Parser failed: ${message}`];
   }
 
+  // Attach a preview of the extracted text whenever parsing was less than
+  // fully successful, so the user can debug or copy values manually.
+  if ((doc.errors && doc.errors.length > 0) || doc.fields.length === 0) {
+    doc.debugText = condenseForDebug(fullText);
+  }
+
   return doc;
+}
+
+/**
+ * Reduce extracted text to a debug-friendly preview: keep lines that look
+ * useful (contain a dollar sign or a recognizable label) up to ~3000 chars.
+ */
+function condenseForDebug(text: string): string {
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const keepers = lines.filter((l) =>
+    /\$|balance|value|contribution|match|cost basis|agi|adjusted|filing|wages|qualified|retirement|benefit/i.test(l),
+  );
+  const pool = keepers.length > 0 ? keepers : lines;
+  let out = '';
+  for (const l of pool) {
+    if (out.length + l.length + 1 > 3000) break;
+    out += (out ? '\n' : '') + l;
+  }
+  return out || text.slice(0, 3000);
 }

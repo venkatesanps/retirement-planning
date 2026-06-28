@@ -44,6 +44,12 @@ export interface ParsedDocument {
   notes?: string[];
   /** Errors during parsing — surfaced for the user to know it was partial. */
   errors?: string[];
+  /**
+   * Optional preview of the extracted PDF text, populated when fields were
+   * missing or the document type was unknown. Lets the user verify what
+   * pdf.js read and copy values manually. Capped at ~3000 chars.
+   */
+  debugText?: string;
 }
 
 export const DOCUMENT_KIND_LABELS: Record<DocumentKind, string> = {
