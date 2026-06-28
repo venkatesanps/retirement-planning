@@ -16,7 +16,7 @@ import {
   type Account,
 } from '@retirement/engine';
 import { useHydrateStore, useStore } from '@/lib/store';
-import { formatCurrency, withBasePath } from '@/lib/utils';
+import { formatCurrency } from '@/lib/utils';
 import { NoHouseholdYet } from '@/components/empty-state';
 
 const ACCOUNT_LABEL: Record<string, string> = {
@@ -134,7 +134,7 @@ export default function DashboardPage() {
               .
             </p>
             <Link
-              href={withBasePath('/plan/')}
+              href="/plan/"
               className="mt-4 inline-flex items-center gap-1 text-xs text-primary font-medium hover:underline"
             >
               See full plan <ArrowUpRight className="h-3 w-3" />
@@ -150,7 +150,7 @@ export default function DashboardPage() {
               Plan recomputes immediately when you save.
             </p>
             <Link
-              href={withBasePath('/onboarding/')}
+              href="/onboarding/"
               className="mt-4 inline-flex items-center gap-1 text-xs text-primary font-medium hover:underline"
             >
               Open onboarding <ArrowRight className="h-3 w-3" />

@@ -14,7 +14,6 @@ import {
   type FormInput,
   type FormValues,
 } from '@/lib/form-schema';
-import { withBasePath } from '@/lib/utils';
 import { Button, FieldError, Input, Label, Select } from '@/components/ui/field';
 
 const ACCOUNT_KIND_LABELS: Record<string, string> = {
@@ -90,7 +89,7 @@ export default function OnboardingPage() {
 
   const onSubmit = (v: FormValues) => {
     setHousehold(toHousehold(v));
-    router.push(withBasePath('/dashboard/'));
+    router.push('/dashboard/');
   };
 
   return (

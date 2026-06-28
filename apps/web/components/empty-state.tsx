@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { ArrowRight, Sparkles } from 'lucide-react';
-import { withBasePath } from '@/lib/utils';
 
 export function NoHouseholdYet() {
   return (
@@ -16,7 +15,7 @@ export function NoHouseholdYet() {
         stay in this browser.
       </p>
       <Link
-        href={withBasePath('/onboarding/')}
+        href="/onboarding/"
         className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary text-primary-foreground px-5 py-3 text-sm font-medium shadow-sm hover:opacity-90 transition"
       >
         Start onboarding <ArrowRight className="h-4 w-4" />
