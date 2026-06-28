@@ -4,9 +4,9 @@ import { ThemeToggle } from './theme-toggle';
 
 const NAV = [
   { href: '/onboarding/', label: 'Onboarding' },
+  { href: '/documents/', label: 'Documents' },
   { href: '/dashboard/', label: 'Dashboard' },
   { href: '/plan/', label: 'Plan' },
-  { href: '/preview/', label: 'Design' },
   { href: '/privacy/', label: 'Privacy' },
 ];
 
