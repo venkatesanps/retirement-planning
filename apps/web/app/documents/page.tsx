@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,11 +14,18 @@ import {
 } from 'lucide-react';
 import {
   parseDocument,
+  prefetchPdfjs,
   type ParsedDocument,
   type ParsedField,
 } from '@/lib/parsers';
 import { useHydrateStore, useStore } from '@/lib/store';
 import { Button } from '@/components/ui/field';
+
+interface ParsingJob {
+  name: string;
+  phase: 'queued' | 'loading' | 'parsing';
+  fraction: number;
+}
 
 export default function DocumentsPage() {
   useHydrateStore();
@@ -28,28 +35,60 @@ export default function DocumentsPage() {
   const household = useStore((s) => s.household);
   const patchHousehold = useStore((s) => s.patchHousehold);
 
-  const [parsing, setParsing] = useState<string[]>([]);
+  const [jobs, setJobs] = useState<ParsingJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Start in 'preloading' on the client; on the server we render 'idle' and
+  // immediately swap on hydration via the effect below.
+  const [engineState, setEngineState] = useState<'idle' | 'preloading' | 'ready'>('preloading');
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Kick off the pdf.js + worker download as soon as the page mounts so the
+  // first upload doesn't pay the 366KB worker fetch cost.
+  useEffect(() => {
+    let cancelled = false;
+    prefetchPdfjs()
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setEngineState('ready');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
-      const list = Array.from(files).filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+      const list = Array.from(files).filter(
+        (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'),
+      );
       if (list.length === 0) {
         setError('Only PDF files are supported.');
         return;
       }
       setError(null);
+
+      // Seed jobs as queued so the user sees them immediately
+      setJobs((prev) => [
+        ...prev,
+        ...list.map((f) => ({ name: f.name, phase: 'queued' as const, fraction: 0 })),
+      ]);
+
       for (const file of list) {
-        setParsing((p) => [...p, file.name]);
+        const updateJob = (patch: Partial<ParsingJob>) => {
+          setJobs((prev) =>
+            prev.map((j) => (j.name === file.name ? { ...j, ...patch } : j)),
+          );
+        };
         try {
-          const parsed = await parseDocument(file);
+          const parsed = await parseDocument(file, {
+            onProgress: (fraction, phase) => updateJob({ phase, fraction }),
+          });
           addDocument(parsed);
         } catch (err) {
           setError(`Failed to read ${file.name}: ${err instanceof Error ? err.message : 'unknown error'}`);
         } finally {
-          setParsing((p) => p.filter((n) => n !== file.name));
+          setJobs((prev) => prev.filter((j) => j.name !== file.name));
         }
       }
     },
@@ -72,7 +111,6 @@ export default function DocumentsPage() {
         </p>
       </header>
 
-      {/* Left: dropzone + privacy panel */}
       <div className="space-y-4">
         <Dropzone
           onFiles={handleFiles}
@@ -89,20 +127,35 @@ export default function DocumentsPage() {
           onChange={(e) => e.target.files && handleFiles(e.target.files)}
         />
 
+        <EngineStatus state={engineState} />
+
         {error ? (
           <div className="rounded-lg border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
             {error}
           </div>
         ) : null}
 
-        {parsing.length > 0 ? (
-          <div className="rounded-2xl border border-border bg-card p-4 text-sm">
-            <div className="font-medium flex items-center gap-2">
+        {jobs.length > 0 ? (
+          <div className="rounded-2xl border border-border bg-card p-4">
+            <div className="text-sm font-medium flex items-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin text-primary" /> Parsing…
             </div>
-            <ul className="mt-2 text-muted-foreground space-y-1 text-xs">
-              {parsing.map((n) => (
-                <li key={n} className="truncate">{n}</li>
+            <ul className="mt-3 space-y-2">
+              {jobs.map((j) => (
+                <li key={j.name} className="text-xs">
+                  <div className="flex justify-between gap-2 mb-1">
+                    <span className="truncate text-muted-foreground">{j.name}</span>
+                    <span className="text-muted-foreground numeral shrink-0">
+                      {phaseLabel(j.phase, j.fraction)}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full bg-primary transition-all duration-150"
+                      style={{ width: `${Math.max(5, Math.round(j.fraction * 100))}%` }}
+                    />
+                  </div>
+                </li>
               ))}
             </ul>
           </div>
@@ -112,7 +165,6 @@ export default function DocumentsPage() {
         <SupportedDocs />
       </div>
 
-      {/* Right: parsed cards */}
       <div className="space-y-4">
         <div className="text-xs uppercase tracking-wider text-muted-foreground">
           Recently parsed — confirm before applying
@@ -134,6 +186,27 @@ export default function DocumentsPage() {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+function phaseLabel(phase: ParsingJob['phase'], fraction: number): string {
+  if (phase === 'queued') return 'queued';
+  if (phase === 'loading') return 'loading engine…';
+  return `${Math.round(fraction * 100)}%`;
+}
+
+function EngineStatus({ state }: { state: 'idle' | 'preloading' | 'ready' }) {
+  if (state === 'ready') {
+    return (
+      <div className="flex items-center gap-2 text-xs text-success">
+        <CheckCircle2 className="h-3.5 w-3.5" /> PDF engine ready
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading PDF engine (~370 KB)…
     </div>
   );
 }
@@ -395,16 +468,9 @@ function ConfidenceBadge({ value }: { value: number }) {
 
 /**
  * Translate selected parsed fields into household mutations.
- *
- * - SSA fields update the matching SocialSecurity entry (self assumed unless
- *   already split; this is best-effort for v1).
- * - 1040 fields update spend assumptions and filing status.
- * - Account-statement fields update the first matching account by kind.
  */
 function applyExtractedFieldsToHousehold(
-  h: Parameters<typeof import('@/lib/store').useStore.setState>[0] extends never
-    ? never
-    : NonNullable<ReturnType<typeof useStore.getState>['household']>,
+  h: NonNullable<ReturnType<typeof useStore.getState>['household']>,
   doc: ParsedDocument,
   selected: Set<string>,
 ): NonNullable<ReturnType<typeof useStore.getState>['household']> {
@@ -422,10 +488,8 @@ function applyExtractedFieldsToHousehold(
         if (field.label.includes('full retirement age')) {
           ss[ssIndex] = { ...target, piaMonthly: newPia };
         } else if (field.label.includes('age 70')) {
-          // Convert to PIA by dividing by 1.24 (approx. delayed credit @ FRA 67)
           ss[ssIndex] = { ...target, piaMonthly: newPia / 1.24 };
         } else if (field.label.includes('age 62')) {
-          // Convert to PIA by dividing by 0.7 (approx. reduction)
           ss[ssIndex] = { ...target, piaMonthly: newPia / 0.7 };
         }
         next = { ...next, socialSecurity: ss };
@@ -459,8 +523,6 @@ function applyExtractedFieldsToHousehold(
         next = { ...next, accounts };
       }
     }
-    // Form 1040 fields are informational for now; full integration into the
-    // engine's tax pass arrives in Phase 4.
   }
 
   return next;

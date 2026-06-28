@@ -10,7 +10,7 @@
  */
 
 import { detectDocumentKind } from './detect';
-import { extractPdfText } from './pdf-extract';
+import { extractPdfText, type ExtractOptions } from './pdf-extract';
 import { parseSSAStatement } from './ssa';
 import { parseForm1040 } from './form-1040';
 import { parseAccountStatement } from './account-statement';
@@ -18,6 +18,9 @@ import { DOCUMENT_KIND_LABELS, type ParsedDocument } from './types';
 
 export type { ParsedDocument, DocumentKind, ParsedField } from './types';
 export { DOCUMENT_KIND_LABELS } from './types';
+export { prefetchPdfjs } from './pdf-extract';
+
+export type ParseOptions = ExtractOptions;
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -35,11 +38,14 @@ function baseDoc(file: File): ParsedDocument {
   };
 }
 
-export async function parseDocument(file: File): Promise<ParsedDocument> {
+export async function parseDocument(
+  file: File,
+  opts?: ParseOptions,
+): Promise<ParsedDocument> {
   let fullText = '';
   let pageCount = 0;
   try {
-    const r = await extractPdfText(file);
+    const r = await extractPdfText(file, opts);
     fullText = r.fullText;
     pageCount = r.pageCount;
   } catch (err) {

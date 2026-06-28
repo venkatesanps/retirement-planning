@@ -5,40 +5,67 @@
  * then pdf.js extracts text per page in a Web Worker. We return one string per
  * page so downstream parsers can stay simple.
  *
- * Important privacy invariant: this module never makes a network request with
- * the PDF contents. The pdf.js worker is loaded from this site's own origin.
+ * Privacy invariant: this module never makes a network request with the PDF
+ * contents. The pdf.js worker is loaded from this site's own origin (same
+ * origin policy + strict CSP would block anything else).
  */
 
 import type { PDFDocumentProxy, TextItem, TextMarkedContent } from 'pdfjs-dist/types/src/display/api';
 
 export interface ExtractedPdf {
   pageCount: number;
-  pages: string[]; // text per page
-  fullText: string; // pages joined with \n\n
+  pages: string[];
+  fullText: string;
 }
 
 type PdfJsModule = typeof import('pdfjs-dist');
 
-let pdfjsModule: PdfJsModule | null = null;
+let pdfjsPromise: Promise<PdfJsModule> | null = null;
+let workerWarm = false;
 
-async function getPdfjs(): Promise<PdfJsModule> {
-  if (pdfjsModule) return pdfjsModule;
-  const raw = await import('pdfjs-dist');
-  // Some bundler interop paths wrap ESM under .default — handle both shapes.
-  const mod = ((raw as { default?: PdfJsModule }).default ?? raw) as PdfJsModule;
-  if (typeof mod.getDocument !== 'function') {
-    throw new Error(
-      'pdf.js getDocument is unavailable. The bundler may have shipped a stub instead of the real module.',
-    );
+async function loadPdfjs(): Promise<PdfJsModule> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = (async () => {
+      const raw = await import('pdfjs-dist');
+      const mod = ((raw as { default?: PdfJsModule }).default ?? raw) as PdfJsModule;
+      if (typeof mod.getDocument !== 'function') {
+        throw new Error('pdf.js getDocument is unavailable.');
+      }
+      mod.GlobalWorkerOptions.workerSrc = new URL(
+        'pdfjs-dist/build/pdf.worker.min.mjs',
+        import.meta.url,
+      ).toString();
+      return mod;
+    })();
   }
-  // Load the worker from this same origin (matches CSP self-only requirement).
-  // new URL(...) is statically analyzed by Next/Turbopack and emitted as an asset.
-  mod.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/build/pdf.worker.min.mjs',
-    import.meta.url,
-  ).toString();
-  pdfjsModule = mod;
-  return mod;
+  return pdfjsPromise;
+}
+
+/**
+ * Pre-warm the pdf.js library AND the worker, so the first real upload is
+ * near-instant. Safe to call multiple times. Call on documents-page mount.
+ */
+export async function prefetchPdfjs(): Promise<void> {
+  if (workerWarm) return;
+  const pdfjs = await loadPdfjs();
+  // Force the worker bundle to download by spinning up an empty parse.
+  // A minimal valid empty PDF.
+  const empty = new Uint8Array([
+    0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, // %PDF-1.4
+    0x25, 0xc7, 0xec, 0x8f, 0xa2, 0x0a, // binary marker
+  ]);
+  try {
+    const task = pdfjs.getDocument({ data: empty, verbosity: 0 });
+    // Don't await the document promise — it'll reject for this stub, but the
+    // act of submitting causes the worker to be initialized.
+    void task.promise.catch(() => undefined);
+    // Give the worker fetch a tick to start
+    await new Promise((r) => setTimeout(r, 0));
+    await task.destroy().catch(() => undefined);
+  } catch {
+    // ignore — the goal was only to trigger the worker download
+  }
+  workerWarm = true;
 }
 
 function readFile(file: File): Promise<ArrayBuffer> {
@@ -59,10 +86,8 @@ function isTextItem(item: TextItem | TextMarkedContent): item is TextItem {
 }
 
 /**
- * Read a single page's text. Defensive against the various ways pdf.js can
- * return "no usable text layer" (scanned images, XFA forms, missing fonts):
- * any of those produce content with empty or missing `items`, and we treat
- * that as "page contributed no text" rather than crashing.
+ * Read a single page's text. Defensive against pages without a text layer
+ * (scanned images, XFA forms, missing fonts).
  */
 async function extractPageText(pdf: PDFDocumentProxy, pageNum: number): Promise<string> {
   const page = await pdf.getPage(pageNum);
@@ -91,28 +116,60 @@ async function extractPageText(pdf: PDFDocumentProxy, pageNum: number): Promise<
   return out.join('');
 }
 
-export async function extractPdfText(file: File): Promise<ExtractedPdf> {
-  const pdfjs = await getPdfjs();
+export interface ExtractOptions {
+  /** Called with a 0..1 progress fraction during page extraction. */
+  onProgress?: (fraction: number, phase: 'loading' | 'parsing') => void;
+}
+
+async function extractWithOptions(
+  file: File,
+  enableXfa: boolean,
+  opts: ExtractOptions | undefined,
+): Promise<ExtractedPdf> {
+  opts?.onProgress?.(0, 'loading');
+  const pdfjs = await loadPdfjs();
   const buffer = await readFile(file);
+  opts?.onProgress?.(0.1, 'parsing');
+
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
-    // XFA forms (e.g., some payroll PDFs) need this to surface text.
-    enableXfa: true,
-    // Silence the console "verbosity" output unless something is really wrong.
+    enableXfa,
     verbosity: 0,
   });
 
   let pdf: PDFDocumentProxy | undefined;
   try {
     pdf = await loadingTask.promise;
-    const pages: string[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      pages.push(await extractPageText(pdf, i));
-    }
+    workerWarm = true;
+    const n = pdf.numPages;
+    // Process pages in parallel; for most statements (1–10 pages) this is a
+    // big win over the previous serial loop. The pdf.js worker can interleave
+    // these on its own thread.
+    let done = 0;
+    const pages = await Promise.all(
+      Array.from({ length: n }, (_, i) =>
+        extractPageText(pdf!, i + 1).then((text) => {
+          done += 1;
+          opts?.onProgress?.(0.1 + (done / n) * 0.9, 'parsing');
+          return text;
+        }),
+      ),
+    );
     const fullText = pages.join('\n\n');
-    return { pageCount: pdf.numPages, pages, fullText };
+    return { pageCount: n, pages, fullText };
   } finally {
-    if (pdf) await pdf.cleanup().catch(() => undefined);
-    await loadingTask.destroy().catch(() => undefined);
+    if (pdf) void pdf.cleanup().catch(() => undefined);
+    void loadingTask.destroy().catch(() => undefined);
   }
+}
+
+export async function extractPdfText(
+  file: File,
+  opts?: ExtractOptions,
+): Promise<ExtractedPdf> {
+  // First attempt without XFA (fast path — covers >99% of statements).
+  const fast = await extractWithOptions(file, false, opts);
+  if (fast.fullText.trim().length > 0) return fast;
+  // If we got nothing, retry with XFA enabled for the rare XFA-form PDF.
+  return extractWithOptions(file, true, opts);
 }
