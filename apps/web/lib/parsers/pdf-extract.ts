@@ -17,11 +17,20 @@ export interface ExtractedPdf {
   fullText: string; // pages joined with \n\n
 }
 
-let pdfjsModule: typeof import('pdfjs-dist') | null = null;
+type PdfJsModule = typeof import('pdfjs-dist');
 
-async function getPdfjs(): Promise<typeof import('pdfjs-dist')> {
+let pdfjsModule: PdfJsModule | null = null;
+
+async function getPdfjs(): Promise<PdfJsModule> {
   if (pdfjsModule) return pdfjsModule;
-  const mod = await import('pdfjs-dist');
+  const raw = await import('pdfjs-dist');
+  // Some bundler interop paths wrap ESM under .default — handle both shapes.
+  const mod = ((raw as { default?: PdfJsModule }).default ?? raw) as PdfJsModule;
+  if (typeof mod.getDocument !== 'function') {
+    throw new Error(
+      'pdf.js getDocument is unavailable. The bundler may have shipped a stub instead of the real module.',
+    );
+  }
   // Load the worker from this same origin (matches CSP self-only requirement).
   // new URL(...) is statically analyzed by Next/Turbopack and emitted as an asset.
   mod.GlobalWorkerOptions.workerSrc = new URL(
@@ -50,25 +59,34 @@ function isTextItem(item: TextItem | TextMarkedContent): item is TextItem {
 }
 
 /**
- * Read a single page's text. We preserve approximate line breaks by inserting
- * a newline whenever the y-coordinate changes meaningfully, which matters for
- * the line-oriented regex parsers downstream.
+ * Read a single page's text. Defensive against the various ways pdf.js can
+ * return "no usable text layer" (scanned images, XFA forms, missing fonts):
+ * any of those produce content with empty or missing `items`, and we treat
+ * that as "page contributed no text" rather than crashing.
  */
 async function extractPageText(pdf: PDFDocumentProxy, pageNum: number): Promise<string> {
   const page = await pdf.getPage(pageNum);
-  const content = await page.getTextContent();
+  let content;
+  try {
+    content = await page.getTextContent();
+  } catch {
+    return '';
+  }
+  const items = content?.items;
+  if (!items || !Array.isArray(items) || items.length === 0) return '';
+
   const out: string[] = [];
   let lastY: number | null = null;
-  for (const raw of content.items) {
+  for (const raw of items) {
     if (!isTextItem(raw)) continue;
     const item = raw;
-    const y = item.transform[5]; // y-coordinate
-    if (lastY !== null && Math.abs(y - lastY) > 1) {
+    const y = item.transform?.[5];
+    if (typeof y === 'number' && lastY !== null && Math.abs(y - lastY) > 1) {
       out.push('\n');
     }
-    out.push(item.str);
+    out.push(item.str ?? '');
     if (item.hasEOL) out.push('\n');
-    lastY = y;
+    if (typeof y === 'number') lastY = y;
   }
   return out.join('');
 }
@@ -76,17 +94,25 @@ async function extractPageText(pdf: PDFDocumentProxy, pageNum: number): Promise<
 export async function extractPdfText(file: File): Promise<ExtractedPdf> {
   const pdfjs = await getPdfjs();
   const buffer = await readFile(file);
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer) });
-  const pdf = await loadingTask.promise;
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    // XFA forms (e.g., some payroll PDFs) need this to surface text.
+    enableXfa: true,
+    // Silence the console "verbosity" output unless something is really wrong.
+    verbosity: 0,
+  });
 
-  const pages: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    pages.push(await extractPageText(pdf, i));
+  let pdf: PDFDocumentProxy | undefined;
+  try {
+    pdf = await loadingTask.promise;
+    const pages: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      pages.push(await extractPageText(pdf, i));
+    }
+    const fullText = pages.join('\n\n');
+    return { pageCount: pdf.numPages, pages, fullText };
+  } finally {
+    if (pdf) await pdf.cleanup().catch(() => undefined);
+    await loadingTask.destroy().catch(() => undefined);
   }
-
-  await pdf.cleanup();
-  await loadingTask.destroy();
-
-  const fullText = pages.join('\n\n');
-  return { pageCount: pdf.numPages, pages, fullText };
 }
