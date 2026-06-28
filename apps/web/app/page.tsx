@@ -41,13 +41,13 @@ export default function HomePage() {
 
               <div className="mt-8 flex flex-wrap gap-3">
                 <Link
-                  href="/preview"
+                  href="/onboarding/"
                   className="inline-flex items-center gap-2 rounded-xl bg-primary text-primary-foreground px-5 py-3 text-sm font-medium shadow-sm hover:opacity-90 transition"
                 >
-                  See the design preview <ArrowRight className="h-4 w-4" />
+                  Try the planner <ArrowRight className="h-4 w-4" />
                 </Link>
                 <Link
-                  href="/privacy"
+                  href="/privacy/"
                   className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-5 py-3 text-sm font-medium hover:bg-muted transition"
                 >
                   Read the privacy promise

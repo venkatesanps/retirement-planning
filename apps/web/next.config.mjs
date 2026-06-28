@@ -16,6 +16,7 @@ const nextConfig = {
   trailingSlash: true,
   basePath,
   assetPrefix: basePath || undefined,
+  transpilePackages: ['@retirement/engine'],
   env: {
     NEXT_PUBLIC_BASE_PATH: basePath,
   },
